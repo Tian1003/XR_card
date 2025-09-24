@@ -26,19 +26,18 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>此 App 需要使用藍牙以搜尋並連線到鄰近裝置。</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>此 App 需要藍牙權限與周邊裝置連線。</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>需要定位權限以協助藍牙掃描（僅在使用 App 時）</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
-
 	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-peripheral</string>
 		<string>audio</string>
-		<string>fetch</string>
 		<string>processing</string>
 		<string>external-accessory</string>
 		<string>location</string>
@@ -46,6 +45,7 @@
 		<string>push-to-talk</string>
 		<string>bluetooth-central</string>
 		<string>nearby-interaction</string>
+		<string>fetch</string>
 	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
