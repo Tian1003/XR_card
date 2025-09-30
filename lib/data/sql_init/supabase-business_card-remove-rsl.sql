@@ -20,7 +20,7 @@ CREATE TABLE users (
     skill VARCHAR(255), -- 改為單純文字
     email VARCHAR(255),
     phone VARCHAR(255),
-    qr_code_url VARCHAR(255),
+    qr_code_url VARCHAR(255) UNIQUE DEFAULT gen_random_uuid()::text,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
