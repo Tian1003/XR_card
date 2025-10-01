@@ -36,13 +36,38 @@ class _CardExchangePageState extends State<CardExchangePage> {
     if (_submitting) return;
     setState(() => _submitting = true);
     try {
-      // 雙方同時停在交換頁時，任一方按接受即可建立 / 更新 contacts 為 accepted
-      await _svc.acceptContact(me: _svc.myUserId, peer: widget.peerUserId);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已接受並新增到聯絡人')),
+      // 回傳 true 代表這次把對方->我 的 pending 升級成 accepted（雙方都按接受）
+      // 回傳 false 代表我方已建/維持 pending，等待對方接受
+      final ok = await _svc.acceptContact(
+        me: _svc.myUserId,
+        peer: widget.peerUserId,
       );
-      Navigator.of(context).pop(true);
+
+      if (!mounted) return;
+      if (ok) {
+        // 已成為好友（或原本就已是好友）
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('已接受並新增到聯絡人')),
+        );
+        Navigator.of(context).pop(true);
+      } else {
+        // 單邊按接受 → 先留下 pending，等對方再按
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('已送出邀請，等待對方接受')),
+        );
+        // 停留在本頁，讓使用者知情
+      }
+    } on PostgrestException catch (e) {
+      if (e.code == '23505') {
+        // 唯一索引衝突（成對關係已存在，多半是已 accepted）
+        if (!mounted) return;
+        Navigator.of(context).pop(true);
+      } else {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('接受失敗：${e.message}')),
+        );
+      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -79,7 +104,7 @@ class _CardExchangePageState extends State<CardExchangePage> {
     final cs = theme.colorScheme;
 
     return Scaffold(
-      backgroundColor: cs.surface, // 與 profile_page 同系底色（避免自定 AppColors）
+      backgroundColor: cs.surface,
       appBar: AppBar(
         backgroundColor: cs.surface,
         foregroundColor: theme.textTheme.bodyMedium?.color,
@@ -100,13 +125,11 @@ class _CardExchangePageState extends State<CardExchangePage> {
             return const Center(child: Text('找不到此使用者'));
           }
 
-          // 內容區 — 盡量貼近 profile_page 的卡片式風格
           return SingleChildScrollView(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // 名片視覺（沿用你專案的 BusinessCard widget，樣式風格跟 profile_page 一致）
                 Card(
                   color: cs.surfaceVariant,
                   elevation: 0,
@@ -119,10 +142,7 @@ class _CardExchangePageState extends State<CardExchangePage> {
                     child: BusinessCard(profile: p),
                   ),
                 ),
-
                 const SizedBox(height: 16),
-
-                // 基本資訊（與 profile_page 類似的 info 區塊）
                 Card(
                   color: cs.surface,
                   elevation: 0,
@@ -135,41 +155,22 @@ class _CardExchangePageState extends State<CardExchangePage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _infoRow(
-                          context,
-                          icon: Icons.badge_outlined,
-                          label: '職稱',
-                          value: p.jobTitle ?? '-',
-                        ),
+                        _infoRow(context,
+                            icon: Icons.badge_outlined, label: '職稱', value: p.jobTitle ?? '-'),
                         const SizedBox(height: 10),
-                        _infoRow(
-                          context,
-                          icon: Icons.apartment_outlined,
-                          label: '公司',
-                          value: p.company ?? '-',
-                        ),
+                        _infoRow(context,
+                            icon: Icons.apartment_outlined, label: '公司', value: p.company ?? '-'),
                         const SizedBox(height: 10),
-                        _infoRow(
-                          context,
-                          icon: Icons.mail_outline,
-                          label: 'Email',
-                          value: p.email ?? '-',
-                        ),
+                        _infoRow(context,
+                            icon: Icons.mail_outline, label: 'Email', value: p.email ?? '-'),
                         const SizedBox(height: 10),
-                        _infoRow(
-                          context,
-                          icon: Icons.phone_iphone_outlined,
-                          label: '電話',
-                          value: p.phone ?? '-',
-                        ),
+                        _infoRow(context,
+                            icon: Icons.phone_iphone_outlined, label: '電話', value: p.phone ?? '-'),
                         if (p.socialLinks.isNotEmpty) ...[
                           const SizedBox(height: 14),
                           Divider(color: cs.outlineVariant, height: 1),
                           const SizedBox(height: 14),
-                          Text(
-                            '社群連結',
-                            style: theme.textTheme.titleMedium,
-                          ),
+                          Text('社群連結', style: theme.textTheme.titleMedium),
                           const SizedBox(height: 10),
                           Wrap(
                             spacing: 10,
@@ -192,8 +193,6 @@ class _CardExchangePageState extends State<CardExchangePage> {
           );
         },
       ),
-
-      // 底部「拒絕 / 接受」按鈕（替換原本 Edit / Preview）
       bottomNavigationBar: SafeArea(
         child: Container(
           color: cs.surface,
@@ -226,9 +225,7 @@ class _CardExchangePageState extends State<CardExchangePage> {
                   ),
                   child: _submitting
                       ? const SizedBox(
-                          height: 20, width: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
+                          height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
                       : const Text('接受'),
                 ),
               ),
@@ -265,10 +262,7 @@ class _CardExchangePageState extends State<CardExchangePage> {
                     color: cs.onSurface.withOpacity(0.7),
                   ),
                 ),
-                TextSpan(
-                  text: value,
-                  style: theme.textTheme.bodyMedium,
-                ),
+                TextSpan(text: value, style: theme.textTheme.bodyMedium),
               ],
             ),
           ),

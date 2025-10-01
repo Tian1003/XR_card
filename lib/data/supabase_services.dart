@@ -293,45 +293,63 @@ class SupabaseService {
   /// 1) 先確保「我->對方」至少有一筆 pending（沒有就插入）
   /// 2) 嘗試把「對方->我」的 pending 升級為 accepted（只有雙方都按接受才會成功）
   /// 回傳：這次呼叫是否升級成功（true=已成為好友；false=目前仍是 pending）
-  Future<bool> acceptContact({required int me, required int peer}) async {
-    if (me == peer) return false;
+  // lib/data/supabase_services.dart 內
+  // lib/data/supabase_services.dart 內
+Future<bool> acceptContact({required int me, required int peer}) async {
+  if (me == peer) return false;
 
-    // (A) 確保我→對方 至少有一筆 pending
-    final List existMine = await _client
-        .from('contacts')
-        .select('contact_id, status')
-        .eq('requester_id', me)
-        .eq('friend_id', peer)
-        .limit(1);
+  // 先找到這對關係（不分方向），最多一筆
+  final List exist = await _client
+      .from('contacts')
+      .select('contact_id, requester_id, friend_id, status')
+      .or(
+        'and(requester_id.eq.$me,friend_id.eq.$peer),'
+        'and(requester_id.eq.$peer,friend_id.eq.$me)',
+      )
+      .limit(1);
 
-    if (existMine.isEmpty) {
-      await _client.from('contacts').insert({
-        'requester_id': me,
-        'friend_id': peer,
-        'status': 'pending',
-      });
-    } else {
-      final status = (existMine.first['status'] as String?) ?? 'pending';
-      if (status == 'accepted') {
-        // 已經是好友
-        return true;
-      }
-    }
-
-    // (B) 嘗試把 對方→我 的 pending 升級為 accepted（只有雙方都按接受才會命中）
-    final updated = await _client
-        .from('contacts')
-        .update({
-          'status': 'accepted',
-          'updated_at': DateTime.now().toIso8601String(),
-        })
-        .eq('requester_id', peer)
-        .eq('friend_id', me)
-        .eq('status', 'pending')
-        .select();
-
-    return (updated as List).isNotEmpty;
+  if (exist.isEmpty) {
+    // 完全沒有 → 我先送出 pending
+    await _client.from('contacts').insert({
+      'requester_id': me,
+      'friend_id': peer,
+      'status': 'pending',
+    });
+    return false; // 目前只是送出邀請
   }
+
+  final row = exist.first as Map<String, dynamic>;
+  final status = (row['status'] as String?) ?? 'pending';
+  final req = (row['requester_id'] as num).toInt();
+  final fri = (row['friend_id'] as num).toInt();
+
+  if (status == 'accepted') {
+    // 已是好友，直接成功（不要再 insert 以免撞唯一索引）
+    return true;
+  }
+
+  if (status == 'pending') {
+    if (req == peer && fri == me) {
+      // 我是被邀請方 → 這次就把它升級為 accepted
+      await _client
+          .from('contacts')
+          .update({
+            'status': 'accepted',
+            'updated_at': DateTime.now().toIso8601String(),
+          })
+          .eq('contact_id', row['contact_id']);
+      return true;
+    } else {
+      // 我早就送過邀請了，現在只是再按一次接受 → 什麼都不做
+      return false;
+    }
+  }
+
+  // 其它狀態不處理
+  return false;
+}
+
+
 
   /// 我按「拒絕」：刪除雙向 pending；若已 accepted 則不動
   Future<bool> declineContact({required int me, required int peer}) async {
