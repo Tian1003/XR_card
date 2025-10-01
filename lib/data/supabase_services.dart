@@ -1,10 +1,12 @@
+// lib/data/supabase_services.dart
+import 'dart:async';
 import 'dart:io';
+
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'models/user_complete_profile.dart';
 import 'models/contact_relationships.dart';
-
 
 class SupabaseService {
   final SupabaseClient _client;
@@ -17,42 +19,39 @@ class SupabaseService {
 
   SupabaseService._(this._client, this._currentUserId);
 
-  static Future<SupabaseService> create(SupabaseClient client) async {
+  /// 建議在 main()：await SupabaseService.init(Supabase.instance.client);
+  static Future<void> init(SupabaseClient client) async {
     final id = await _detectUserIdByDevice();
-    return SupabaseService._(client, id);
+    _instance = SupabaseService._(client, id);
   }
 
-  /// 賦予 iPhone 裝置 userId=2、iPad 裝置 userId=1
+  /// 相容你現有用法：SupabaseService(Supabase.instance.client)
   factory SupabaseService(SupabaseClient client) {
-    _instance ??= SupabaseService._(client, 2); // 預設給 2
+    _instance ??= SupabaseService._(client, 2); // 預設當作手機: 2
     return _instance!;
   }
 
   /// 舊寫法相容：提供靜態 currentUserId
   static int get currentUserId => _instance?._currentUserId ?? 2;
 
-  /// 建議在 main() 啟動時呼叫一次，完成偵測並覆寫單例
-  static Future<void> init(SupabaseClient client) async {
-    final id = await _detectUserIdByDevice();
-    _instance = SupabaseService._(client, id);
-  }
-
-  // iPad=1 //
+  // iPad=1 / 其餘=2
   static Future<int> _detectUserIdByDevice() async {
     try {
       if (Platform.isIOS) {
         final info = await DeviceInfoPlugin().iosInfo;
         final model = (info.model ?? '').toLowerCase();
         final name = (info.name ?? '').toLowerCase();
-        final machine = (info.utsname.machine ?? '').toLowerCase(); 
+        final machine = (info.utsname.machine ?? '').toLowerCase();
         final isIpad = model.contains('ipad') || name.contains('ipad') || machine.startsWith('ipad');
         return isIpad ? 1 : 2;
       }
     } catch (_) {}
-    return 2; // 其他平台或偵測失敗 → 當作手機
+    return 2;
   }
 
-  // ====== 以下保留你原有 API 不變 ======
+  // ---------------------------
+  // Users / Profiles
+  // ---------------------------
 
   Future<UserCompleteProfile?> fetchUserCompleteProfile([int? userId]) async {
     final id = userId ?? _currentUserId;
@@ -63,6 +62,21 @@ class SupabaseService {
         .maybeSingle();
     if (data == null) return null;
     return UserCompleteProfile.fromJson(data);
+  }
+
+  /// 一次拿多人的完整名片（from view: user_complete_profile）
+  Future<List<UserCompleteProfile>> fetchProfilesByIds(Iterable<int> ids) async {
+    final idList = ids.toList();
+    if (idList.isEmpty) return <UserCompleteProfile>[];
+
+    final rows = await _client
+        .from('user_complete_profile')
+        .select('*')
+        .inFilter('user_id', idList) as List;
+
+    return rows
+        .map((m) => UserCompleteProfile.fromJson(m as Map<String, dynamic>))
+        .toList();
   }
 
   Future<void> updateUser({
@@ -171,101 +185,72 @@ class SupabaseService {
     }
   }
 
-  Future<List<ContactRelationship>> fetchAcceptedContacts([int? userId]) async {
-      final id = userId ?? _currentUserId;
-      final rows = await _client
-          .from('contact_relationships')
-          .select()
-          .or('requester_id.eq.$id,friend_id.eq.$id')
-          .eq('status', 'accepted')
-          .order('updated_at', ascending: false) as List;
+  // ---------------------------
+  // Contacts（不改你的資料表）
+  // ---------------------------
 
-      return rows
-          .map((m) => ContactRelationship.fromJson(m as Map<String, dynamic>))
-          .toList();
+  /// 即時監聽 + 輪詢備援：任何與我有關的關係變動（insert/update/delete）→ 回傳最新的 contact_relationships
+  Stream<List<ContactRelationship>> contactsStream({required int me}) {
+    final controller = StreamController<List<ContactRelationship>>.broadcast();
+    Timer? _poll;
+    RealtimeChannel? _channel;
+
+    Future<void> _emit() async {
+      try {
+        final rows = await _client
+            .from('contact_relationships')
+            .select()
+            .or('requester_id.eq.$me,friend_id.eq.$me')
+            .order('updated_at', ascending: false) as List;
+
+        final list = rows
+            .map((m) => ContactRelationship.fromJson(m as Map<String, dynamic>))
+            .toList();
+
+        if (!controller.isClosed) controller.add(list);
+      } catch (e) {
+        if (!controller.isClosed) controller.addError(e);
+      }
     }
-  // lib/data/supabase_services.dart 內的 class SupabaseService {...} 裡
 
-Future<void> acceptContact({required int me, required int peer}) async {
-  if (me == peer) return;
+    // 初始推一次
+    _emit();
 
-  // 1) 將任一方向的 pending -> accepted
-  final List updatedRows = await _client
-      .from('contacts')
-      .update({
-        'status': 'accepted',
-        'updated_at': DateTime.now().toIso8601String(),
-      })
-      .or(
-        'and(requester_id.eq.$me,friend_id.eq.$peer),'
-        'and(requester_id.eq.$peer,friend_id.eq.$me)',
-      )
-      .eq('status', 'pending')
-      .select(); // 不要 maybeSingle/single，拿 List
+    // Realtime 訂閱 contacts（只要有變更且跟我有關，就重抓一次）
+    _channel = _client
+        .channel('public:contacts_stream_user_$me')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'contacts',
+          callback: (payload) {
+            bool involvesMe(Map<String, dynamic>? row) {
+              if (row == null) return false;
+              final req = (row['requester_id'] as num?)?.toInt();
+              final fri = (row['friend_id'] as num?)?.toInt();
+              return req == me || fri == me;
+            }
+            if (involvesMe(payload.newRecord) || involvesMe(payload.oldRecord)) {
+              _emit();
+            }
+          },
+        )
+        .subscribe();
 
-  if (updatedRows.isNotEmpty) {
-    // 有成功把 pending 變成 accepted，就完成了
-    return;
+    // 備援輪詢（Realtime 偶爾漏事件或沒啟用時仍能更新）
+    _poll = Timer.periodic(const Duration(seconds: 3), (_) => _emit());
+
+    controller.onCancel = () async {
+      _poll?.cancel();
+      if (_channel != null) {
+        await _client.removeChannel(_channel!);
+      }
+    };
+
+    return controller.stream;
   }
 
-  // 2) 檢查是否已經有 accepted（任一方向）
-  final List existsAccepted = await _client
-      .from('contacts')
-      .select('contact_id')
-      .or(
-        'and(requester_id.eq.$me,friend_id.eq.$peer),'
-        'and(requester_id.eq.$peer,friend_id.eq.$me)',
-      )
-      .eq('status', 'accepted')
-      .limit(1);
-
-  if (existsAccepted.isNotEmpty) return;
-
-  // 3) 都沒有 -> 直接插一筆 accepted
-  await _client.from('contacts').insert({
-    'requester_id': me,
-    'friend_id': peer,
-    'status': 'accepted',
-  });
-}
-
-Future<void> upsertPending({required int me, required int peer}) async {
-  if (me == peer) return;
-
-  // 查是否已有任一方向的關係
-  final List exist = await _client
-      .from('contacts')
-      .select('contact_id, status, requester_id, friend_id')
-      .or(
-        'and(requester_id.eq.$me,friend_id.eq.$peer),'
-        'and(requester_id.eq.$peer,friend_id.eq.$me)',
-      )
-      .limit(1);
-
-  if (exist.isEmpty) {
-    // 完全沒有 → 建一筆 pending（由我發出）
-    await _client.from('contacts').insert({
-      'requester_id': me,
-      'friend_id': peer,
-      'status': 'pending',
-    });
-    return;
-  }
-
-  
-}
-
-/// 取與我有關係的對象 userIds（accepted 以及可選 pending）
-
-
-
-}
-
-// lib/data/supabase_services.dart
-// ... 你的 SupabaseService 既有內容
-
-extension ContactsQuery on SupabaseService {
-  /// 取與我有關係的對象 userIds（accepted 以及可選 pending）
+  /// 取與我有關的 userId 清單（僅 accepted / 或含 pending）
   Future<Set<int>> fetchContactUserIds({required int me, bool includePending = true}) async {
     final statuses = includePending ? ['accepted', 'pending'] : ['accepted'];
 
@@ -285,15 +270,83 @@ extension ContactsQuery on SupabaseService {
     return ids;
   }
 
-  Future<void> declineContact({required int me, required int peer}) async {
-  // 拒絕 = 把彼此之間的 pending 關係移除（雙向）
-  await _client
-      .from('contacts')
-      .delete()
-      .or('and(requester_id.eq.$me,friend_id.eq.$peer),and(requester_id.eq.$peer,friend_id.eq.$me)');
+  /// （清單頁用）已接受的關係（若你有其他地方在用，保留這個 API）
+  Future<List<ContactRelationship>> fetchAcceptedContacts([int? userId]) async {
+    final id = userId ?? _currentUserId;
+    final rows = await _client
+        .from('contact_relationships')
+        .select()
+        .or('requester_id.eq.$id,friend_id.eq.$id')
+        .eq('status', 'accepted')
+        .order('updated_at', ascending: false) as List;
+
+    return rows
+        .map((m) => ContactRelationship.fromJson(m as Map<String, dynamic>))
+        .toList();
+  }
+
+  // ---------------------------
+  // 同意 / 拒絕（不改表結構）
+  // ---------------------------
+
+  /// 我按「接受」：
+  /// 1) 先確保「我->對方」至少有一筆 pending（沒有就插入）
+  /// 2) 嘗試把「對方->我」的 pending 升級為 accepted（只有雙方都按接受才會成功）
+  /// 回傳：這次呼叫是否升級成功（true=已成為好友；false=目前仍是 pending）
+  Future<bool> acceptContact({required int me, required int peer}) async {
+    if (me == peer) return false;
+
+    // (A) 確保我→對方 至少有一筆 pending
+    final List existMine = await _client
+        .from('contacts')
+        .select('contact_id, status')
+        .eq('requester_id', me)
+        .eq('friend_id', peer)
+        .limit(1);
+
+    if (existMine.isEmpty) {
+      await _client.from('contacts').insert({
+        'requester_id': me,
+        'friend_id': peer,
+        'status': 'pending',
+      });
+    } else {
+      final status = (existMine.first['status'] as String?) ?? 'pending';
+      if (status == 'accepted') {
+        // 已經是好友
+        return true;
+      }
+    }
+
+    // (B) 嘗試把 對方→我 的 pending 升級為 accepted（只有雙方都按接受才會命中）
+    final updated = await _client
+        .from('contacts')
+        .update({
+          'status': 'accepted',
+          'updated_at': DateTime.now().toIso8601String(),
+        })
+        .eq('requester_id', peer)
+        .eq('friend_id', me)
+        .eq('status', 'pending')
+        .select();
+
+    return (updated as List).isNotEmpty;
+  }
+
+  /// 我按「拒絕」：刪除雙向 pending；若已 accepted 則不動
+  Future<bool> declineContact({required int me, required int peer}) async {
+    if (me == peer) return false;
+
+    final deleted = await _client
+        .from('contacts')
+        .delete()
+        .or(
+          'and(requester_id.eq.$me,friend_id.eq.$peer),'
+          'and(requester_id.eq.$peer,friend_id.eq.$me)',
+        )
+        .eq('status', 'pending')
+        .select();
+
+    return (deleted as List).isNotEmpty;
+  }
 }
-
-}
-
-
-  
