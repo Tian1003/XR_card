@@ -42,7 +42,10 @@ class SupabaseService {
         final model = (info.model ?? '').toLowerCase();
         final name = (info.name ?? '').toLowerCase();
         final machine = (info.utsname.machine ?? '').toLowerCase();
-        final isIpad = model.contains('ipad') || name.contains('ipad') || machine.startsWith('ipad');
+        final isIpad =
+            model.contains('ipad') ||
+            name.contains('ipad') ||
+            machine.startsWith('ipad');
         return isIpad ? 1 : 2;
       }
     } catch (_) {}
@@ -65,14 +68,18 @@ class SupabaseService {
   }
 
   /// 一次拿多人的完整名片（from view: user_complete_profile）
-  Future<List<UserCompleteProfile>> fetchProfilesByIds(Iterable<int> ids) async {
+  Future<List<UserCompleteProfile>> fetchProfilesByIds(
+    Iterable<int> ids,
+  ) async {
     final idList = ids.toList();
     if (idList.isEmpty) return <UserCompleteProfile>[];
 
-    final rows = await _client
-        .from('user_complete_profile')
-        .select('*')
-        .inFilter('user_id', idList) as List;
+    final rows =
+        await _client
+                .from('user_complete_profile')
+                .select('*')
+                .inFilter('user_id', idList)
+            as List;
 
     return rows
         .map((m) => UserCompleteProfile.fromJson(m as Map<String, dynamic>))
@@ -107,13 +114,18 @@ class SupabaseService {
     required int userId,
     required List<SocialLink> desired,
   }) async {
-    final rows = await _client
-        .from('social_links')
-        .select('link_id, platform, url, display_name, display_order, is_active')
-        .eq('user_id', userId) as List;
+    final rows =
+        await _client
+                .from('social_links')
+                .select(
+                  'link_id, platform, url, display_name, display_order, is_active',
+                )
+                .eq('user_id', userId)
+            as List;
 
     final dbByPlatform = <String, Map<String, dynamic>>{
-      for (final r in rows) (r['platform'] as String).toLowerCase(): r as Map<String, dynamic>,
+      for (final r in rows)
+        (r['platform'] as String).toLowerCase(): r as Map<String, dynamic>,
     };
     final desiredByPlatform = <String, SocialLink>{
       for (final l in desired) l.platform.toLowerCase(): l,
@@ -121,10 +133,14 @@ class SupabaseService {
 
     final toDeleteIds = <int>[
       for (final p in dbByPlatform.keys)
-        if (!desiredByPlatform.containsKey(p)) dbByPlatform[p]!['link_id'] as int,
+        if (!desiredByPlatform.containsKey(p))
+          dbByPlatform[p]!['link_id'] as int,
     ];
     if (toDeleteIds.isNotEmpty) {
-      await _client.from('social_links').delete().inFilter('link_id', toDeleteIds);
+      await _client
+          .from('social_links')
+          .delete()
+          .inFilter('link_id', toDeleteIds);
     }
 
     final toInsert = <Map<String, dynamic>>[];
@@ -197,11 +213,13 @@ class SupabaseService {
 
     Future<void> _emit() async {
       try {
-        final rows = await _client
-            .from('contact_relationships')
-            .select()
-            .or('requester_id.eq.$me,friend_id.eq.$me')
-            .order('updated_at', ascending: false) as List;
+        final rows =
+            await _client
+                    .from('contact_relationships')
+                    .select()
+                    .or('requester_id.eq.$me,friend_id.eq.$me')
+                    .order('updated_at', ascending: false)
+                as List;
 
         final list = rows
             .map((m) => ContactRelationship.fromJson(m as Map<String, dynamic>))
@@ -230,7 +248,9 @@ class SupabaseService {
               final fri = (row['friend_id'] as num?)?.toInt();
               return req == me || fri == me;
             }
-            if (involvesMe(payload.newRecord) || involvesMe(payload.oldRecord)) {
+
+            if (involvesMe(payload.newRecord) ||
+                involvesMe(payload.oldRecord)) {
               _emit();
             }
           },
@@ -251,14 +271,19 @@ class SupabaseService {
   }
 
   /// 取與我有關的 userId 清單（僅 accepted / 或含 pending）
-  Future<Set<int>> fetchContactUserIds({required int me, bool includePending = true}) async {
+  Future<Set<int>> fetchContactUserIds({
+    required int me,
+    bool includePending = true,
+  }) async {
     final statuses = includePending ? ['accepted', 'pending'] : ['accepted'];
 
-    final rows = await _client
-        .from('contacts')
-        .select('requester_id, friend_id, status')
-        .or('requester_id.eq.$me,friend_id.eq.$me')
-        .inFilter('status', statuses) as List;
+    final rows =
+        await _client
+                .from('contacts')
+                .select('requester_id, friend_id, status')
+                .or('requester_id.eq.$me,friend_id.eq.$me')
+                .inFilter('status', statuses)
+            as List;
 
     final ids = <int>{};
     for (final r in rows) {
@@ -273,12 +298,14 @@ class SupabaseService {
   /// （清單頁用）已接受的關係（若你有其他地方在用，保留這個 API）
   Future<List<ContactRelationship>> fetchAcceptedContacts([int? userId]) async {
     final id = userId ?? _currentUserId;
-    final rows = await _client
-        .from('contact_relationships')
-        .select()
-        .or('requester_id.eq.$id,friend_id.eq.$id')
-        .eq('status', 'accepted')
-        .order('updated_at', ascending: false) as List;
+    final rows =
+        await _client
+                .from('contact_relationships')
+                .select()
+                .or('requester_id.eq.$id,friend_id.eq.$id')
+                .eq('status', 'accepted')
+                .order('updated_at', ascending: false)
+            as List;
 
     return rows
         .map((m) => ContactRelationship.fromJson(m as Map<String, dynamic>))
@@ -366,5 +393,25 @@ Future<bool> acceptContact({required int me, required int peer}) async {
         .select();
 
     return (deleted as List).isNotEmpty;
+  }
+
+  /// 根據 QR 碼 token 獲取用戶信息
+  Future<UserCompleteProfile?> getUserByQRToken(String token) async {
+    try {
+      final response = await _client
+          .from('user_complete_profile')
+          .select()
+          .eq('qr_code_url', token)
+          .maybeSingle();
+
+      if (response != null) {
+        final userId = response['user_id'] as int;
+        return await fetchUserCompleteProfile(userId);
+      }
+      return null;
+    } catch (e) {
+      print('獲取 QR 用戶錯誤: $e'); // 使用 print 而非 debugPrint
+      return null;
+    }
   }
 }
