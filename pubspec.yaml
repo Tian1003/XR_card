@@ -32,9 +32,8 @@ dependencies:
   url_launcher: ^6.3.0  # 打開 URL
   auto_size_text: ^3.0.0 # 自動調整文字大小
   device_info_plus: ^10.1.0
-
-  # 加入 Cupertino Icons 字型，用於 iOS 風格的圖示。
-  cupertino_icons: ^1.0.8
+  mobile_scanner: ^7.1.2  # 添加 QR 碼掃描功能
+  cupertino_icons: ^1.0.8 # 加入 Cupertino Icons 字型，用於 iOS 風格的圖示。
   flutter_blue_plus: ^1.35.12
   permission_handler: ^12.0.1
   flutter_ble_peripheral: ^1.2.6
