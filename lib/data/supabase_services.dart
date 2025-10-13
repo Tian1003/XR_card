@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'models/user_complete_profile.dart';
@@ -50,6 +51,38 @@ class SupabaseService {
       }
     } catch (_) {}
     return 2;
+  }
+
+  /// 上傳頭像圖片到 Storage
+  ///
+  /// @param imageFile 使用者選擇的圖片檔案
+  /// @param userId 使用者 ID，用來建立獨特的檔案路徑
+  /// @return 上傳成功後的公開 URL，若失敗則回傳 null
+  Future<String?> uploadAvatarToStorage(File imageFile, int userId) async {
+    try {
+      final fileExt = imageFile.path.split('.').last;
+      // 使用 user ID 和時間戳建立一個獨一無二的檔案名稱，避免衝突
+      final fileName =
+          '$userId-${DateTime.now().millisecondsSinceEpoch}.$fileExt';
+      final filePath = fileName;
+
+      // 上傳到 'avatars' bucket
+      await _client.storage
+          .from('avatars')
+          .upload(
+            filePath,
+            imageFile,
+            fileOptions: const FileOptions(cacheControl: '3600', upsert: false),
+          );
+
+      // 取得上傳後的公開 URL
+      final imageUrl = _client.storage.from('avatars').getPublicUrl(filePath);
+      return imageUrl;
+    } catch (e) {
+      // 在 release 模式下，建議使用更完善的日誌系統
+      debugPrint('SupabaseService::uploadAvatarToStorage Error: $e');
+      return null;
+    }
   }
 
   // ---------------------------
@@ -322,61 +355,59 @@ class SupabaseService {
   /// 回傳：這次呼叫是否升級成功（true=已成為好友；false=目前仍是 pending）
   // lib/data/supabase_services.dart 內
   // lib/data/supabase_services.dart 內
-Future<bool> acceptContact({required int me, required int peer}) async {
-  if (me == peer) return false;
+  Future<bool> acceptContact({required int me, required int peer}) async {
+    if (me == peer) return false;
 
-  // 先找到這對關係（不分方向），最多一筆
-  final List exist = await _client
-      .from('contacts')
-      .select('contact_id, requester_id, friend_id, status')
-      .or(
-        'and(requester_id.eq.$me,friend_id.eq.$peer),'
-        'and(requester_id.eq.$peer,friend_id.eq.$me)',
-      )
-      .limit(1);
+    // 先找到這對關係（不分方向），最多一筆
+    final List exist = await _client
+        .from('contacts')
+        .select('contact_id, requester_id, friend_id, status')
+        .or(
+          'and(requester_id.eq.$me,friend_id.eq.$peer),'
+          'and(requester_id.eq.$peer,friend_id.eq.$me)',
+        )
+        .limit(1);
 
-  if (exist.isEmpty) {
-    // 完全沒有 → 我先送出 pending
-    await _client.from('contacts').insert({
-      'requester_id': me,
-      'friend_id': peer,
-      'status': 'pending',
-    });
-    return false; // 目前只是送出邀請
-  }
-
-  final row = exist.first as Map<String, dynamic>;
-  final status = (row['status'] as String?) ?? 'pending';
-  final req = (row['requester_id'] as num).toInt();
-  final fri = (row['friend_id'] as num).toInt();
-
-  if (status == 'accepted') {
-    // 已是好友，直接成功（不要再 insert 以免撞唯一索引）
-    return true;
-  }
-
-  if (status == 'pending') {
-    if (req == peer && fri == me) {
-      // 我是被邀請方 → 這次就把它升級為 accepted
-      await _client
-          .from('contacts')
-          .update({
-            'status': 'accepted',
-            'updated_at': DateTime.now().toIso8601String(),
-          })
-          .eq('contact_id', row['contact_id']);
-      return true;
-    } else {
-      // 我早就送過邀請了，現在只是再按一次接受 → 什麼都不做
-      return false;
+    if (exist.isEmpty) {
+      // 完全沒有 → 我先送出 pending
+      await _client.from('contacts').insert({
+        'requester_id': me,
+        'friend_id': peer,
+        'status': 'pending',
+      });
+      return false; // 目前只是送出邀請
     }
+
+    final row = exist.first as Map<String, dynamic>;
+    final status = (row['status'] as String?) ?? 'pending';
+    final req = (row['requester_id'] as num).toInt();
+    final fri = (row['friend_id'] as num).toInt();
+
+    if (status == 'accepted') {
+      // 已是好友，直接成功（不要再 insert 以免撞唯一索引）
+      return true;
+    }
+
+    if (status == 'pending') {
+      if (req == peer && fri == me) {
+        // 我是被邀請方 → 這次就把它升級為 accepted
+        await _client
+            .from('contacts')
+            .update({
+              'status': 'accepted',
+              'updated_at': DateTime.now().toIso8601String(),
+            })
+            .eq('contact_id', row['contact_id']);
+        return true;
+      } else {
+        // 我早就送過邀請了，現在只是再按一次接受 → 什麼都不做
+        return false;
+      }
+    }
+
+    // 其它狀態不處理
+    return false;
   }
-
-  // 其它狀態不處理
-  return false;
-}
-
-
 
   /// 我按「拒絕」：刪除雙向 pending；若已 accepted 則不動
   Future<bool> declineContact({required int me, required int peer}) async {

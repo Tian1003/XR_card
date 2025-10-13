@@ -103,17 +103,34 @@ class _EditProfilePageState extends State<EditProfilePage> {
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
 
-    // (可選) 先上傳頭貼
-    // String? avatarUrl = widget.profile.avatarUrl;
-    // if (_localAvatarPath != null) {
-    //   final uploaded = await _svc.uploadAvatarToStorage(File(_localAvatarPath!), widget.profile.userId);
-    //   if (uploaded != null) avatarUrl = uploaded;
-    // }
+    // 顯示讀取中，避免重複點擊
+    // (您可以加入一個 bool _isSaving 狀態來顯示 Loading 畫面)
 
-    // 1) 更新 users 基本資料
+    // 步驟 0: 如果有選擇新頭貼，先上傳
+    String? avatarUrl = widget.profile.avatarUrl; // 先保留舊的 URL
+    if (_localAvatarPath != null) {
+      final uploadedUrl = await _svc.uploadAvatarToStorage(
+        File(_localAvatarPath!),
+        widget.profile.userId,
+      );
+      // 如果上傳成功，就使用新的 URL
+      if (uploadedUrl != null) {
+        avatarUrl = uploadedUrl;
+      } else {
+        // (可選) 上傳失敗時提醒使用者
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('頭像上傳失敗，請稍後再試')));
+        }
+        return; // 或者您可以選擇繼續儲存其他資料
+      }
+    }
+
+    // 步驟 1: 更新 users 基本資料 (包含新的 avatarUrl)
     await _svc.updateUser(
       userId: widget.profile.userId,
-      // avatarUrl: avatarUrl,
+      avatarUrl: avatarUrl,
       username: nameCtrl.text.trim(),
       company: companyCtrl.text.trim(),
       jobTitle: titleCtrl.text.trim(),
@@ -159,7 +176,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
     // 5) 組回更新後的本地 model，帶回上一頁立即更新
     final updated = widget.profile.copyWith(
-      // avatarUrl: avatarUrl,
+      avatarUrl: avatarUrl, // ===== 修改處 =====
       username: nameCtrl.text.trim(),
       company: companyCtrl.text.trim(),
       jobTitle: titleCtrl.text.trim(),
@@ -169,6 +186,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
     );
 
     if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('個人資料已儲存')));
     Navigator.pop(context, updated);
   }
 

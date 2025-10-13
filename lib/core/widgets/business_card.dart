@@ -38,12 +38,17 @@ class BusinessCard extends StatelessWidget {
               ),
               child: CircleAvatar(
                 radius: 74.5,
-                backgroundImage: NetworkImage(
-                  profile.avatarUrl?.isNotEmpty == true
-                      ? profile.avatarUrl!
-                      : 'https://i.pravatar.cc/300',
-                ),
+                backgroundImage: (profile.avatarUrl ?? '').isNotEmpty
+                    ? NetworkImage(profile.avatarUrl!)
+                    : null,
                 backgroundColor: Colors.grey.shade200,
+                child: (profile.avatarUrl ?? '').isEmpty
+                    ? Icon(
+                        Icons.person,
+                        size: 90, // 明確指定圖示大小
+                        color: Colors.grey.shade400, // 設定一個柔和的顏色
+                      )
+                    : null,
               ),
             ),
             const SizedBox(height: 4),
