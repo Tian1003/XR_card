@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:auto_size_text/auto_size_text.dart';
 
 import 'package:my_app/core/theme/app_colors.dart'; // 依你的實際路徑
@@ -6,11 +8,32 @@ import 'package:my_app/core/widgets/social_links_list.dart'; // 前面我們做�
 import 'package:my_app/data/models/user_complete_profile.dart';
 
 /// 上方名片區塊（可重用）
-/// 將原本依賴 _userData 的內容改為從 [profile] 取得
 class BusinessCard extends StatelessWidget {
   final UserCompleteProfile profile;
 
   const BusinessCard({super.key, required this.profile});
+
+  /// 處理點擊 Email 的函式
+  Future<void> _launchEmail(BuildContext context, String? email) async {
+    if (email == null || email.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Email 地址無效')));
+      return;
+    }
+
+    final Uri emailLaunchUri = Uri(scheme: 'mailto', path: email);
+
+    if (await canLaunchUrl(emailLaunchUri)) {
+      await launchUrl(emailLaunchUri);
+    } else {
+      // 若無法開啟 mailto，則複製到剪貼簿
+      Clipboard.setData(ClipboardData(text: email));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('無法開啟郵件應用，已將 Email 複製到剪貼簿')));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -128,31 +151,44 @@ class BusinessCard extends StatelessWidget {
             const SizedBox(height: 18),
 
             // Email
-            Row(
-              children: [
-                Container(
-                  width: 28,
-                  height: 28,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF2F4F4F),
-                    borderRadius: BorderRadius.circular(6),
+            InkWell(
+              onTap: () => _launchEmail(context, profile.email),
+              borderRadius: BorderRadius.circular(8),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF2F4F4F),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Icon(
+                      Icons.email_outlined,
+                      color: Colors.white,
+                      size: 18,
+                    ),
                   ),
-                  child: const Icon(
-                    Icons.email_outlined,
-                    color: Colors.white,
-                    size: 18,
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: AutoSizeText(
+                      ': ${(profile.email?.isNotEmpty == true) ? profile.email! : '未提供 Email'}',
+                      style: const TextStyle(
+                        fontSize: 20,
+                        color: AppColors.businessCardText,
+                        fontWeight: FontWeight.w700,
+                      ),
+                      maxLines: 1,
+                      minFontSize: 12,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  ': ${(profile.email?.isNotEmpty == true) ? profile.email! : '未提供 Email'}',
-                  style: const TextStyle(
-                    fontSize: 20,
-                    color: AppColors.businessCardText,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
+                  // 加入和社群連結一樣的圖示
+                  const SizedBox(width: 8),
+                  const Icon(Icons.open_in_new, size: 18, color: Colors.grey),
+                ],
+              ),
             ),
 
             // 社群連結
