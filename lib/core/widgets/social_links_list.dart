@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:auto_size_text/auto_size_text.dart';
 
 import 'package:my_app/core/theme/app_colors.dart';
 import 'package:my_app/core/theme/social_platform_config.dart';
@@ -8,14 +9,8 @@ import 'package:my_app/data/models/user_complete_profile.dart';
 
 class SocialLinksList extends StatelessWidget {
   final List<SocialLink> socialLinks;
-
-  /// 文字樣式（預設接近你原來的設計）
   final TextStyle textStyle;
-
-  /// 每個項目之間的垂直間距
   final double itemSpacing;
-
-  /// 圖示徽章大小（寬=高）
   final double badgeSize;
 
   const SocialLinksList({
@@ -75,6 +70,7 @@ class SocialLinksList extends StatelessWidget {
             },
             borderRadius: BorderRadius.circular(8),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center, // 改回垂直置中
               children: [
                 // 平台徽章
                 Container(
@@ -103,13 +99,16 @@ class SocialLinksList extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(
+                  // 自動調整文字大小
+                  child: AutoSizeText(
                     ': ${title.isNotEmpty ? title : link.url}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
                     style: textStyle,
+                    maxLines: 1,
+                    minFontSize: 12,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
+                const SizedBox(width: 8),
                 const Icon(Icons.open_in_new, size: 18, color: Colors.grey),
               ],
             ),
