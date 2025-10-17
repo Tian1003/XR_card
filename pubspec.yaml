@@ -25,18 +25,25 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  intl: ^0.18.0
+  # 後端與資料庫
   supabase_flutter: ^2.6.0
-  qr_flutter: ^4.0.0
-  image_picker: ^1.1.1  # 拍照或選取照片
-  url_launcher: ^6.3.0  # 打開 URL
-  auto_size_text: ^3.0.0 # 自動調整文字大小
-  device_info_plus: ^10.1.0
-  mobile_scanner: ^7.1.2  # 添加 QR 碼掃描功能
-  cupertino_icons: ^1.0.8 # 加入 Cupertino Icons 字型，用於 iOS 風格的圖示。
-  flutter_blue_plus: ^1.35.12
-  permission_handler: ^12.0.1
-  flutter_ble_peripheral: ^1.2.6
+  # 硬體互動與權限
+  camera: ^0.11.2                  # 開啟相機套件：模擬 XR 畫面
+  image_picker: ^1.1.1             # 拍照或選取照片
+  mobile_scanner: ^7.1.2           # 添加 QR 碼掃描功能
+  flutter_blue_plus: ^1.35.12      # 添加藍牙功能
+  flutter_ble_peripheral: ^1.2.6   # 添加藍牙低功耗裝置功能
+  permission_handler: ^12.0.1      # 管理應用程式權限，如相機、定位等。
+  device_info_plus: ^10.1.0        # 提供裝置相關資訊，如型號、作業系統版本等。
+  # 使用者介面
+  cupertino_icons: ^1.0.8          # 加入 Cupertino Icons 字型，用於 iOS 風格的圖示。
+  auto_size_text: ^3.0.0           # 自動調整文字大小
+  qr_flutter: ^4.0.0               # 生成 QR 碼
+  # 通用工具
+  intl: ^0.18.0                    # 國際化與本地化工具: 提供日期、數字格式的轉換和多國語言支援。
+  url_launcher: ^6.3.0             # 啟動外部 URL
+  google_generative_ai: ^0.4.7     # 添加 Google 生成式 AI 功能
+  flutter_dotenv: ^5.1.0           # 管理環境變數，讓您能安全地儲存 API 金鑰
 
 dev_dependencies:
   flutter_test:
@@ -57,7 +64,8 @@ flutter:
   uses-material-design: true
 
   # 若要加入專案資源（assets），請參考以下範例：
-#  assets:
+  assets:
+    - .env # 加入 .env 檔案，用於儲存敏感資訊，如 API 金鑰
  #   - assets/images/
   #  - assets/icons/
 

@@ -31,7 +31,9 @@
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>此 App 需要藍牙權限與周邊裝置連線。</string>
 	<key>NSCameraUsageDescription</key>
-	<string>需要相機權限</string>
+	<string>我們需要您的相機權限來掃描 QR 碼以及開啟 AR 模擬功能。</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>若您需要使用錄影功能，App 會需要您的麥克風權限。</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>需要定位權限以協助藍牙掃描（僅在使用 App 時）</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
