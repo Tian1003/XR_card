@@ -1,20 +1,24 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'pages/home_page.dart';
-import 'data/supabase_services.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+
+import 'package:my_app/data/supabase_services.dart';
+import 'package:my_app/pages/home_page.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // 在 App 啟動前載入 .env 檔案
+  await dotenv.load(fileName: ".env");
+
   await Supabase.initialize(
     // 天
-    // url: 'https://afqtdcbyezgjnearxgxz.supabase.co',
-    // anonKey:
-    //     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFmcXRkY2J5ZXpnam5lYXJ4Z3h6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUyMzg4NTYsImV4cCI6MjA3MDgxNDg1Nn0.1YwgDMEBrss177ADUD1VvMcKqWU0skMmzubmq0UhTec',
+    // url: dotenv.env['Tian_Supabase_URL']!,
+    // anonKey: dotenv.env['Tian_Supabase_Anon_Key']!,
+
     // 蔡
-    url: 'https://sjfjxhagyodvibvajmdm.supabase.co',
-    anonKey:
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNqZmp4aGFneW9kdmlidmFqbWRtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU2MDc2NjAsImV4cCI6MjA3MTE4MzY2MH0.9GqgOZT79mPJ2obPQ_uIcCU7xHNeb_BYYAaFD7qzrq4',
+    url: dotenv.env['Sai_Supabase_URL']!,
+    anonKey: dotenv.env['Sai_Supabase_Anon_Key']!,
   );
 
   // 建立並偵測裝置，iPad=1、iPhone=2
