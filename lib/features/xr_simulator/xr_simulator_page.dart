@@ -1,10 +1,14 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:collection/collection.dart';
 import 'package:camera/camera.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:my_app/data/models/user_complete_profile.dart';
 import 'package:my_app/data/supabase_services.dart';
 import 'package:my_app/services/ai_service.dart';
+import 'package:my_app/services/bluetooth_service.dart';
+import 'package:my_app/services/nearby_presence.dart';
 import 'package:my_app/core/widgets/expanding_fab.dart';
 import 'package:my_app/core/widgets/xr_business_card.dart';
 
@@ -15,16 +19,22 @@ class XrSimulatorPage extends StatefulWidget {
   State<XrSimulatorPage> createState() => _XrSimulatorPageState();
 }
 
-class _XrSimulatorPageState extends State<XrSimulatorPage> {
+class _XrSimulatorPageState extends State<XrSimulatorPage>
+    with WidgetsBindingObserver {
   CameraController? _controller;
   bool _isCameraInitialized = false;
 
-  // 用於獲取使用者資料
   late final SupabaseService _supabaseService;
-  UserCompleteProfile? _userProfile;
-
   late final AiService _aiService;
   bool _isAnalyzing = false;
+
+  // --- 藍牙與好友偵測 ---
+  final BluetoothService _btService = BluetoothService.I;
+  final NearbyPresence _nearbyPresence = NearbyPresence.I;
+  Timer? _scanTimer; // 用於週期性掃描
+  Set<int> _friendIds = {}; // 我已接受的好友 ID 列表 (僅 ID)
+  Map<int, UserCompleteProfile> _allFriendProfiles = {}; // 預先載入 *所有* 好友的資料
+  Set<int> _nearbyFriendIds = {}; // *當前* 偵測到的好友 ID
 
   @override
   void initState() {
@@ -32,21 +42,50 @@ class _XrSimulatorPageState extends State<XrSimulatorPage> {
     _supabaseService = SupabaseService(Supabase.instance.client);
     _aiService = AiService();
     _initializeCamera();
-    _loadUserData();
+
+    // --- 藍牙好友偵測 ---
+    WidgetsBinding.instance.addObserver(this); // 監聽 App 生命週期
+    _btService.results.addListener(_onScanResultsUpdated); // 監聽掃描結果
+    _loadFriendListAndStartScanning(); // 載入好友並開始掃描
   }
 
-  // 用於執行企業分析
-  Future<void> _runCompanyAnalysis() async {
+  // --- App 生命週期管理 ---
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (!mounted) return;
+
+    if (state == AppLifecycleState.resumed) {
+      // App 回到前景，重啟相機和掃描
+      debugPrint("XR: App resumed, restarting camera and scan...");
+      _initializeCamera();
+      _loadFriendListAndStartScanning(); // 重新載入並開始掃描
+    } else if (state == AppLifecycleState.paused) {
+      // App 進入背景，釋放相機和停止掃描
+      debugPrint("XR: App paused, disposing camera and stopping scan...");
+      _controller?.dispose(); // 釋放相機
+      _isCameraInitialized = false; // 標記相機
+      _stopPeriodicScans(); // 停止藍牙掃描
+      _nearbyPresence.stop(); // 新增：停止廣播
+    }
+  }
+
+  // --- 用於執行企業分析 ---
+  Future<void> _runCompanyAnalysis(UserCompleteProfile profile) async {
     if (_isAnalyzing) return;
 
+    final companyName = profile.company;
+    if (companyName == null || companyName.trim().isEmpty) {
+      _showSnackBar("${profile.username} 未提供公司名稱，無法分析。");
+      return;
+    }
+
     setState(() => _isAnalyzing = true);
-    _showSnackBar('正在為您進行企業分析...');
+    _showSnackBar('正在為 ${companyName} 進行企業分析...');
 
-    final companyName = _userProfile?.company ?? '';
-    String? result;
-
-    // --- 新增：自動重試邏輯 ---
+    // --- 自動重試邏輯 ---
     const maxRetries = 2; // 最多重試 2 次
+    String? result;
     for (int i = 0; i <= maxRetries; i++) {
       result = await _aiService.analyzeCompany(companyName);
 
@@ -61,7 +100,6 @@ class _XrSimulatorPageState extends State<XrSimulatorPage> {
         await Future.delayed(const Duration(seconds: 2));
       }
     }
-    // --- 重試邏輯結束 ---
 
     debugPrint('===== Gemini 企業分析結果 =====');
     debugPrint(result);
@@ -91,7 +129,118 @@ class _XrSimulatorPageState extends State<XrSimulatorPage> {
     }
   }
 
+  // --- 藍牙好友偵測邏輯 ---
+  Future<void> _loadFriendListAndStartScanning() async {
+    // 1. 確保藍牙已開啟
+    await _btService.waitUntilPoweredOn(timeout: const Duration(seconds: 10));
+
+    // 應在載入好友ID之前啟動，因為 NearbyPresence.start() 依賴 Supabase 登入狀態
+    try {
+      await _nearbyPresence.start();
+      debugPrint("XR: 已開始廣播自己的 ID");
+    } catch (e) {
+      debugPrint("XR: 啟動廣播失敗: $e");
+      if (mounted) _showSnackBar("無法啟動廣播功能");
+    }
+
+    // 2. 獲取好友 ID 列表
+    try {
+      // (SupabaseService.currentUserId 應由 NearbyPresence.start() 內部獲取)
+      _friendIds = await _supabaseService.fetchContactUserIds(
+        me: _supabaseService.myUserId,
+        includePending: false, // 只偵測已接受的好友
+      );
+      debugPrint('XR: 好友 ID 列表載入: ${_friendIds.length} 人');
+
+      // 立即預先載入所有好友的 Profile
+      if (_friendIds.isNotEmpty) {
+        await _fetchAllFriendProfiles(_friendIds);
+      }
+    } catch (e) {
+      debugPrint("XR: 載入好友列表失敗: $e");
+      if (mounted) _showSnackBar("無法載入好友列表");
+    }
+
+    // 3. 開始週期性掃描
+    _startPeriodicScans();
+  }
+
+  // --- 預先獲取所有好友的 Profile ---
+  Future<void> _fetchAllFriendProfiles(Set<int> friendIds) async {
+    try {
+      final profiles = await _supabaseService.fetchProfilesByIds(friendIds);
+      if (!mounted) return;
+      // 將 List 轉為 Map，方便後續快速查找
+      _allFriendProfiles = {for (var p in profiles) p.userId: p};
+      debugPrint('XR: 已預先載入 ${_allFriendProfiles.length} 位好友的 Profile');
+    } catch (e) {
+      debugPrint("XR: 預先載入好友 Profile 失敗: $e");
+    }
+  }
+
+  // --- 開始週期性掃描 ---
+  void _startPeriodicScans() {
+    if (!mounted) return;
+    if (_scanTimer != null && _scanTimer!.isActive) {
+      debugPrint("XR: 掃描已在執行中");
+      return;
+    }
+
+    debugPrint("XR: 開始週期性掃描...");
+    _scanNow(); // 立即掃描一次
+    _scanTimer = Timer.periodic(const Duration(seconds: 8), (timer) {
+      _scanNow();
+    });
+  }
+
+  void _stopPeriodicScans() {
+    debugPrint("XR: 停止週期性掃描");
+    _scanTimer?.cancel();
+    _scanTimer = null;
+    _btService.stopScan();
+  }
+
+  void _scanNow() {
+    if (!mounted || _btService.isScanning.value) return;
+    debugPrint("XR: 觸發掃描...");
+    _btService.startScan();
+  }
+
+  // 核心：當藍牙結果更新時
+  void _onScanResultsUpdated() {
+    if (!mounted) return;
+
+    final Set<int> currentlyDetectedFriendIds = {};
+
+    for (final result in _btService.results.value) {
+      // 使用 NearbyPresence 提供的靜態方法解析
+      final parsed = NearbyPresence.parseAdvAll(result.advertisementData);
+      if (parsed == null) continue;
+
+      final detectedUserId = parsed.userId;
+
+      // 判斷是否為「非本人」的「好友」
+      if (detectedUserId != _supabaseService.myUserId &&
+          _friendIds.contains(detectedUserId)) {
+        currentlyDetectedFriendIds.add(detectedUserId);
+      }
+    }
+
+    // 邏輯簡化：只有在「當前偵測到的好友 Set」與「上次的 Set」內容不同時，才觸發 setState
+    if (!const SetEquality().equals(
+      _nearbyFriendIds,
+      currentlyDetectedFriendIds,
+    )) {
+      setState(() {
+        _nearbyFriendIds = currentlyDetectedFriendIds;
+        debugPrint("XR: 附近好友更新: $_nearbyFriendIds");
+      });
+    }
+  }
+
+  // --- 相機邏輯 ---
   Future<void> _initializeCamera() async {
+    if (_isCameraInitialized) return;
     try {
       final cameras = await availableCameras();
       if (cameras.isNotEmpty) {
@@ -111,19 +260,6 @@ class _XrSimulatorPageState extends State<XrSimulatorPage> {
       }
     } catch (e) {
       _showErrorDialog("相機初始化失敗: $e");
-    }
-  }
-
-  Future<void> _loadUserData() async {
-    try {
-      final profile = await _supabaseService.fetchUserCompleteProfile();
-      if (mounted) {
-        setState(() {
-          _userProfile = profile;
-        });
-      }
-    } catch (e) {
-      debugPrint("讀取使用者資料失敗: $e");
     }
   }
 
@@ -148,6 +284,13 @@ class _XrSimulatorPageState extends State<XrSimulatorPage> {
   @override
   void dispose() {
     _controller?.dispose();
+
+    // --- 藍牙好友偵測 ---
+    WidgetsBinding.instance.removeObserver(this);
+    _stopPeriodicScans();
+    _btService.results.removeListener(_onScanResultsUpdated);
+    _nearbyPresence.stop(); // 停止廣播
+
     super.dispose();
   }
 
@@ -197,11 +340,32 @@ class _XrSimulatorPageState extends State<XrSimulatorPage> {
             right: 0,
             left: isLandscape ? screenWidth * 0.55 : null,
             width: isLandscape ? null : screenWidth * 0.75,
-            child: XrBusinessCard(
-              profile: _userProfile,
-              onAnalyzePressed: _runCompanyAnalysis, // 企業分析
-              onRecordPressed: () => _showSnackBar("點擊了對話回顧"), // 對話回顧
-              onChatPressed: () => _showSnackBar("點擊了話題建議"), // 話題建議
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              // (修改) 遍歷 ID Set，並從 Map 中取出 Profile
+              children: _nearbyFriendIds.map((friendId) {
+                // 從預先載入的 Map 中查找 Profile
+                final profile = _allFriendProfiles[friendId];
+
+                // 如果 Profile 尚未載入完成 (理論上應該很快)，則不顯示
+                if (profile == null) {
+                  return const SizedBox.shrink();
+                }
+
+                // (保留) 顯示名片
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8.0),
+                  child: XrBusinessCard(
+                    profile: profile,
+                    onAnalyzePressed: () => _runCompanyAnalysis(profile),
+                    onRecordPressed: () =>
+                        _showSnackBar("點擊了 ${profile.username} 的對話回顧"),
+                    onChatPressed: () =>
+                        _showSnackBar("點擊了 ${profile.username} 的話題建議"),
+                  ),
+                );
+              }).toList(),
             ),
           ),
 
@@ -225,6 +389,7 @@ class _XrSimulatorPageState extends State<XrSimulatorPage> {
   }
 
   void _showSnackBar(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
