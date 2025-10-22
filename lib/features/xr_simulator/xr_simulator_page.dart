@@ -1,10 +1,8 @@
-import 'dart:async'; // 用於 Timer
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:collection/collection.dart';
 import 'package:camera/camera.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart'
-    as fbp; // 為了 ScanResult
 
 import 'package:my_app/data/models/user_complete_profile.dart';
 import 'package:my_app/data/supabase_services.dart';
@@ -30,13 +28,13 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
   late final AiService _aiService;
   bool _isAnalyzing = false;
 
-  // --- (修改) 藍牙與好友偵測 ---
+  // --- 藍牙與好友偵測 ---
   final BluetoothService _btService = BluetoothService.I;
+  final NearbyPresence _nearbyPresence = NearbyPresence.I;
   Timer? _scanTimer; // 用於週期性掃描
   Set<int> _friendIds = {}; // 我已接受的好友 ID 列表 (僅 ID)
-  Map<int, UserCompleteProfile> _allFriendProfiles = {}; // (修改) 預先載入 *所有* 好友的資料
-  Set<int> _nearbyFriendIds = {}; // (修改) *當前* 偵測到的好友 ID
-  // --- (修改) 結束 ---
+  Map<int, UserCompleteProfile> _allFriendProfiles = {}; // 預先載入 *所有* 好友的資料
+  Set<int> _nearbyFriendIds = {}; // *當前* 偵測到的好友 ID
 
   @override
   void initState() {
@@ -45,14 +43,13 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
     _aiService = AiService();
     _initializeCamera();
 
-    // --- (保留) 藍牙好友偵測 ---
+    // --- 藍牙好友偵測 ---
     WidgetsBinding.instance.addObserver(this); // 監聽 App 生命週期
     _btService.results.addListener(_onScanResultsUpdated); // 監聽掃描結果
     _loadFriendListAndStartScanning(); // 載入好友並開始掃描
-    // --- (保留) 結束 ---
   }
 
-  // --- (保留) App 生命週期管理 ---
+  // --- App 生命週期管理 ---
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
@@ -69,11 +66,11 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
       _controller?.dispose(); // 釋放相機
       _isCameraInitialized = false; // 標記相機
       _stopPeriodicScans(); // 停止藍牙掃描
+      _nearbyPresence.stop(); // 新增：停止廣播
     }
   }
-  // --- (保留) 結束 ---
 
-  // --- (恢復) 用於執行企業分析 ---
+  // --- 用於執行企業分析 ---
   Future<void> _runCompanyAnalysis(UserCompleteProfile profile) async {
     if (_isAnalyzing) return;
 
@@ -86,7 +83,7 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
     setState(() => _isAnalyzing = true);
     _showSnackBar('正在為 ${companyName} 進行企業分析...');
 
-    // --- 新增：自動重試邏輯 ---
+    // --- 自動重試邏輯 ---
     const maxRetries = 2; // 最多重試 2 次
     String? result;
     for (int i = 0; i <= maxRetries; i++) {
@@ -103,7 +100,6 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
         await Future.delayed(const Duration(seconds: 2));
       }
     }
-    // --- 重試邏輯結束 ---
 
     debugPrint('===== Gemini 企業分析結果 =====');
     debugPrint(result);
@@ -133,21 +129,30 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
     }
   }
 
-  // --- (修改) 藍牙好友偵測邏輯 ---
-
+  // --- 藍牙好友偵測邏輯 ---
   Future<void> _loadFriendListAndStartScanning() async {
     // 1. 確保藍牙已開啟
     await _btService.waitUntilPoweredOn(timeout: const Duration(seconds: 10));
 
+    // 應在載入好友ID之前啟動，因為 NearbyPresence.start() 依賴 Supabase 登入狀態
+    try {
+      await _nearbyPresence.start();
+      debugPrint("XR: 已開始廣播自己的 ID");
+    } catch (e) {
+      debugPrint("XR: 啟動廣播失敗: $e");
+      if (mounted) _showSnackBar("無法啟動廣播功能");
+    }
+
     // 2. 獲取好友 ID 列表
     try {
+      // (SupabaseService.currentUserId 應由 NearbyPresence.start() 內部獲取)
       _friendIds = await _supabaseService.fetchContactUserIds(
         me: _supabaseService.myUserId,
         includePending: false, // 只偵測已接受的好友
       );
       debugPrint('XR: 好友 ID 列表載入: ${_friendIds.length} 人');
 
-      // (新增) 立即預先載入所有好友的 Profile
+      // 立即預先載入所有好友的 Profile
       if (_friendIds.isNotEmpty) {
         await _fetchAllFriendProfiles(_friendIds);
       }
@@ -160,7 +165,7 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
     _startPeriodicScans();
   }
 
-  // (新增) 預先獲取所有好友的 Profile
+  // --- 預先獲取所有好友的 Profile ---
   Future<void> _fetchAllFriendProfiles(Set<int> friendIds) async {
     try {
       final profiles = await _supabaseService.fetchProfilesByIds(friendIds);
@@ -173,6 +178,7 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
     }
   }
 
+  // --- 開始週期性掃描 ---
   void _startPeriodicScans() {
     if (!mounted) return;
     if (_scanTimer != null && _scanTimer!.isActive) {
@@ -200,13 +206,14 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
     _btService.startScan();
   }
 
-  // (修改) 核心：當藍牙結果更新時
+  // 核心：當藍牙結果更新時
   void _onScanResultsUpdated() {
     if (!mounted) return;
 
     final Set<int> currentlyDetectedFriendIds = {};
 
     for (final result in _btService.results.value) {
+      // 使用 NearbyPresence 提供的靜態方法解析
       final parsed = NearbyPresence.parseAdvAll(result.advertisementData);
       if (parsed == null) continue;
 
@@ -219,8 +226,7 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
       }
     }
 
-    // (修改) 邏輯簡化：
-    // 只有在「當前偵測到的好友 Set」與「上次的 Set」內容不同時，才觸發 setState
+    // 邏輯簡化：只有在「當前偵測到的好友 Set」與「上次的 Set」內容不同時，才觸發 setState
     if (!const SetEquality().equals(
       _nearbyFriendIds,
       currentlyDetectedFriendIds,
@@ -283,6 +289,7 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
     WidgetsBinding.instance.removeObserver(this);
     _stopPeriodicScans();
     _btService.results.removeListener(_onScanResultsUpdated);
+    _nearbyPresence.stop(); // 停止廣播
 
     super.dispose();
   }
