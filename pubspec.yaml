@@ -44,6 +44,7 @@ dependencies:
   url_launcher: ^6.3.0             # 啟動外部 URL
   google_generative_ai: ^0.4.7     # 添加 Google 生成式 AI 功能
   flutter_dotenv: ^5.1.0           # 管理環境變數，讓您能安全地儲存 API 金鑰
+  collection: ^1.19.1              # 提供集合操作工具，如相等性檢查、排序等。
 
 dev_dependencies:
   flutter_test:
