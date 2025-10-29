@@ -445,4 +445,35 @@ class SupabaseService {
       return null;
     }
   }
+
+  // ---------------------------
+  // [!!! 新增功能 !!!]
+  // ---------------------------
+
+  /// [新增] 獲取指定聯絡人的最新一筆對話摘要
+  ///
+  /// @param contactId 正在互動的聯絡人 User ID
+  /// @return 最新的 summary 文字，若無則回傳 null
+  Future<String?> fetchLatestConversationSummary(int contactId) async {
+    try {
+      // 假設 'conversation_records' 表中有 'contact_id' (對方的 ID) 和 'user_id' (我方 ID)
+      // 查詢條件：我方 ID 是 _currentUserId 且 聯絡人 ID 是 contactId
+      final response = await _client
+          .from('conversation_records')
+          .select('summary')
+          .eq('user_id', _currentUserId) // 篩選自己的紀錄
+          .eq('contact_id', contactId) // 篩選這位聯絡人
+          .order('created_at', ascending: false) // 依時間排序
+          .limit(1) // 只取最新一筆
+          .maybeSingle();
+
+      if (response != null && response['summary'] != null) {
+        return response['summary'] as String;
+      }
+      return null; // 沒有找到摘要
+    } catch (e) {
+      debugPrint('Error fetching latest conversation summary: $e');
+      return null; // 發生錯誤
+    }
+  }
 }

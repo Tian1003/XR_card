@@ -48,6 +48,7 @@ dependencies:
   record: ^6.1.2
   path_provider: ^2.1.5
   whisper_flutter_new: ^1.0.1
+  http: ^1.5.0                     # 添加 HTTP 客戶端，用於與伺服器通訊
 
 dev_dependencies:
   flutter_test:
