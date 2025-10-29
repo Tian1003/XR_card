@@ -9,13 +9,13 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:my_app/services/summary_service.dart';
 
-
 import 'package:my_app/data/models/user_complete_profile.dart';
 import 'package:my_app/data/supabase_services.dart';
 import 'package:my_app/services/ai_service.dart';
 import 'package:my_app/services/bluetooth_service.dart';
 import 'package:my_app/services/nearby_presence.dart';
 import 'package:my_app/services/speech_to_text.dart';
+import 'package:my_app/services/google_search_service.dart';
 import 'package:my_app/core/widgets/expanding_fab.dart';
 import 'package:my_app/core/widgets/xr_business_card.dart';
 
@@ -24,54 +24,67 @@ class XrSimulatorPage extends StatefulWidget {
 
   @override
   State<XrSimulatorPage> createState() => _XrSimulatorPageState();
-  
 }
 
 class _XrSimulatorPageState extends State<XrSimulatorPage>
-      with WidgetsBindingObserver {
-    CameraController? _controller;
-    bool _isCameraInitialized = false;
+    with WidgetsBindingObserver {
+  CameraController? _controller;
+  bool _isCameraInitialized = false;
 
-    late final SupabaseService _supabaseService;
-    late final AiService _aiService;
-    bool _isAnalyzing = false;
+  late final SupabaseService _supabaseService;
+  late final GoogleSearchService _googleSearchService;
+  late final AiService _aiService;
+  bool _isAnalyzing = false;
+  String _companyAnalysisResult = '';
 
-    // --- 新增：摘要服務，放在類別欄位 ---
-    final SummaryService _summaryService = SummaryService();
+  // --- 新增：摘要服務，放在類別欄位 ---
+  final SummaryService _summaryService = SummaryService();
 
-    // --- 藍牙與好友偵測 ---
-    final BluetoothService _btService = BluetoothService.I;
-    final NearbyPresence _nearbyPresence = NearbyPresence.I;
-    Timer? _scanTimer;
-    Set<int> _friendIds = {};
-    Map<int, UserCompleteProfile> _allFriendProfiles = {};
-    Set<int> _nearbyFriendIds = {};
+  // --- 藍牙與好友偵測 ---
+  final BluetoothService _btService = BluetoothService.I;
+  final NearbyPresence _nearbyPresence = NearbyPresence.I;
+  Timer? _scanTimer;
+  Set<int> _friendIds = {};
+  Map<int, UserCompleteProfile> _allFriendProfiles = {};
+  Set<int> _nearbyFriendIds = {};
 
-    // --- 錄音 / STT 狀態 ---
-    final AudioRecorder _recorder = AudioRecorder();
-    bool _isRecording = false;
-    String? _recordPath;
-    DateTime? _recordStartedAt;
-    final SpeechToTextService _stt = SpeechToTextService();
+  // --- 錄音 / STT 狀態 ---
+  final AudioRecorder _recorder = AudioRecorder();
+  bool _isRecording = false;
+  String? _recordPath;
+  DateTime? _recordStartedAt;
+  final SpeechToTextService _stt = SpeechToTextService();
 
-    Future<T> _withTimeout<T>(Future<T> future, Duration timeout, String tag) async {
-      try {
-        return await future.timeout(timeout, onTimeout: () {
+  // --- 「話題建議」的狀態變數 ---
+  List<String> _dialogSuggestions = [];
+  bool _isLoadingSuggestions = false;
+  String? _suggestionError;
+
+  Future<T> _withTimeout<T>(
+    Future<T> future,
+    Duration timeout,
+    String tag,
+  ) async {
+    try {
+      return await future.timeout(
+        timeout,
+        onTimeout: () {
           throw TimeoutException('$tag timeout after ${timeout.inSeconds}s');
-        });
-      } catch (e, st) {
-        debugPrint('$tag failed: $e');
-        debugPrint('$tag stack: $st');
-        rethrow;
-      }
+        },
+      );
+    } catch (e, st) {
+      debugPrint('$tag failed: $e');
+      debugPrint('$tag stack: $st');
+      rethrow;
     }
-
+  }
 
   @override
   void initState() {
     super.initState();
     _supabaseService = SupabaseService(Supabase.instance.client);
     _aiService = AiService();
+    _googleSearchService = GoogleSearchService();
     _initializeCamera();
 
     // --- 藍牙好友偵測 ---
@@ -92,7 +105,6 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
       debugPrint('Whisper warmup failed: $e');
     }
   }
-
 
   // --- App 生命週期管理 ---
   @override
@@ -121,7 +133,9 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
   // --- 強制停止錄音（在背景/離開頁面時保護） ---
   Future<void> _forceStopRecordingIfNeeded() async {
     if (_isRecording) {
-      try { await _recorder.stop(); } catch (_) {}
+      try {
+        await _recorder.stop();
+      } catch (_) {}
       setState(() {
         _isRecording = false;
       });
@@ -140,9 +154,11 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
       if (rows is List && rows.isNotEmpty) {
         final row = rows.first as Map<String, dynamic>;
         final contentLen = (row['content'] as String?)?.length ?? 0;
-        debugPrint('DB: 最新 record_id=${row['record_id']} '
-            'contact_id=${row['contact_id']} content_len=$contentLen '
-            'created_at=${row['created_at']}');
+        debugPrint(
+          'DB: 最新 record_id=${row['record_id']} '
+          'contact_id=${row['contact_id']} content_len=$contentLen '
+          'created_at=${row['created_at']}',
+        );
         _showSnackBar("最新一筆 record_id=${row['record_id']} 已寫入");
       } else {
         _showSnackBar("抓不到最新一筆資料（contact_id=4）");
@@ -151,9 +167,6 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
       debugPrint("DB: 讀最新一筆失敗: $e");
     }
   }
-
-
-
 
   // --- 用於執行企業分析 ---
   Future<void> _runCompanyAnalysis(UserCompleteProfile profile) async {
@@ -190,11 +203,17 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
     debugPrint('=============================');
 
     if (mounted) {
-      setState(() => _isAnalyzing = false);
-
       final displayResult = (result != null && result.contains('UNAVAILABLE'))
           ? '模型目前忙碌中，請稍後再試。'
           : result ?? '沒有分析結果。';
+
+      setState(() {
+        _isAnalyzing = false;
+        if (!displayResult.contains('模型目前') &&
+            !displayResult.contains('沒有分析結果')) {
+          _companyAnalysisResult = displayResult;
+        }
+      });
 
       showDialog(
         context: context,
@@ -257,6 +276,204 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
     } catch (e) {
       debugPrint("XR: 預先載入好友 Profile 失敗: $e");
     }
+  }
+
+  // --- 話題建議 ---
+  Future<void> _fetchDialogSuggestions(UserCompleteProfile profile) async {
+    if (_isLoadingSuggestions) return;
+    setState(() {
+      _isLoadingSuggestions = true;
+      _suggestionError = null;
+      _dialogSuggestions = [];
+    });
+
+    _showSuggestionsDialog(); // 顯示 Loading Dialog
+
+    try {
+      // 獲取公司名稱和職稱
+      final companyName = profile.company;
+      final jobTitle = profile.jobTitle;
+
+      if (companyName == null || companyName.isEmpty) {
+        throw Exception('未設定公司名稱');
+      }
+
+      String? companyInfo;
+      List<String> newsSnippets = [];
+      String? lastSummary;
+
+      // 1. 獲取企業細節 (重用已分析的結果)
+      if (_companyAnalysisResult.isNotEmpty) {
+        companyInfo = _companyAnalysisResult;
+      } else {
+        companyInfo = null;
+      }
+
+      // 2. 獲取時事新聞 (傳入職稱)
+      newsSnippets = await _fetchNews(companyName, jobTitle); // <--- 修改
+
+      // 3. 獲取上次對話回顧 (Supabase)
+      // [!] 提醒：您需要將 contactId 傳入此頁面
+      // final int? currentContactId = widget.contactId;
+      final int? currentContactId = null; // 暫時用 null
+
+      if (currentContactId != null) {
+        try {
+          lastSummary = await _supabaseService.fetchLatestConversationSummary(
+            currentContactId,
+          );
+        } catch (e) {
+          debugPrint("Error fetching summary: $e");
+        }
+      }
+
+      // 4. 生成「開場白」 (傳入職稱)
+      _dialogSuggestions = await _aiService.generateSuggestions(
+        companyName,
+        jobTitle,
+        companyInfo,
+        newsSnippets,
+        lastSummary,
+      );
+    } catch (e) {
+      debugPrint('Error fetching suggestions: $e');
+      if (mounted) {
+        setState(() {
+          _suggestionError = '載入建議時發生錯誤: $e';
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingSuggestions = false);
+        Navigator.pop(context); // 關閉 Loading Dialog
+        _showSuggestionsDialog(); // 開啟顯示結果或錯誤的 Dialog
+      }
+    }
+  }
+
+  // --- 輔助函式：搜尋新聞 ---
+  Future<List<String>> _fetchNews(String companyName, String? jobTitle) async {
+    List<String> snippets = [];
+    try {
+      print('正在搜尋關於 $companyName ($jobTitle) 的新聞...');
+
+      // 建立動態的搜尋查詢列表
+      List<String> queries = ["\"$companyName\" 產業動態", "\"$companyName\" 最近新聞"];
+
+      // 如果有職稱，加入職稱相關的搜尋
+      if (jobTitle != null && jobTitle.isNotEmpty) {
+        queries.add("\"$jobTitle\" 產業趨勢");
+        queries.add("\"$jobTitle\" 最新消息");
+      }
+
+      // 使用修正後的呼叫方式 (位置參數)
+      final searchResults = await _googleSearchService.search(queries);
+
+      // 解析 searchResults (List<Map<String, String>>)
+      if (searchResults.isNotEmpty) {
+        for (var item in searchResults) {
+          String title = item['title'] ?? '';
+          String snippet = item['snippet'] ?? '';
+          String combined = title.isNotEmpty ? "$title：$snippet" : snippet;
+
+          if (combined.isNotEmpty) {
+            snippets.add(
+              combined.length > 100
+                  ? '${combined.substring(0, 100)}...'
+                  : combined,
+            );
+          }
+        }
+      }
+      print('新聞摘要: $snippets');
+    } catch (e) {
+      debugPrint("Error fetching news from Google Search: $e");
+    }
+    return snippets;
+  }
+
+  // --- 輔助函式：顯示建議的 Dialog (Modal Bottom Sheet) ---
+  void _showSuggestionsDialog() {
+    showModalBottomSheet(
+      context: context,
+      isDismissible: !_isLoadingSuggestions, // 載入中不可關閉
+      enableDrag: !_isLoadingSuggestions,
+      builder: (context) {
+        Widget content;
+        if (_isLoadingSuggestions) {
+          content = const Center(
+            child: Padding(
+              padding: EdgeInsets.all(32.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text('正在為您產生對話建議...'),
+                ],
+              ),
+            ),
+          );
+        } else if (_suggestionError != null) {
+          content = Center(
+            child: Padding(
+              padding: const EdgeInsets.all(32.0),
+              child: Text('錯誤: $_suggestionError'),
+            ),
+          );
+        } else if (_dialogSuggestions.isEmpty) {
+          content = const Center(
+            child: Padding(
+              padding: EdgeInsets.all(32.0),
+              child: Text('目前沒有對話建議'),
+            ),
+          );
+        } else {
+          // 成功取得建議
+          content = ListView(
+            padding: const EdgeInsets.symmetric(vertical: 20.0),
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24.0,
+                  vertical: 8.0,
+                ),
+                child: Text(
+                  '試試看這樣開場：',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              ..._dialogSuggestions.map(
+                (suggestion) => ListTile(
+                  leading: const Padding(
+                    padding: EdgeInsets.only(left: 8.0),
+                    child: Icon(
+                      Icons.lightbulb_outline,
+                      color: Colors.amber,
+                      size: 28,
+                    ),
+                  ),
+                  title: Text(suggestion),
+                  onTap: () {
+                    Navigator.pop(context);
+                  },
+                ),
+              ),
+            ],
+          );
+        }
+
+        return Container(
+          padding: const EdgeInsets.all(16.0),
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 300),
+            child: content,
+          ),
+        );
+      },
+    );
   }
 
   // --- 開始週期性掃描 ---
@@ -378,7 +595,11 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
         }
         final path = await _genWavPath();
         await _recorder.start(
-          const RecordConfig(encoder: AudioEncoder.wav, sampleRate: 16000, numChannels: 1),
+          const RecordConfig(
+            encoder: AudioEncoder.wav,
+            sampleRate: 16000,
+            numChannels: 1,
+          ),
           path: path,
         );
         setState(() {
@@ -446,9 +667,9 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
 
         // （可選）抓回最新一筆確認
         await _debugFetchLatestRecord();
-
       } // ← 關閉 if-else（你原本少了這個）
-    } catch (e) { // ← 關閉外層 try（你原本也少了）
+    } catch (e) {
+      // ← 關閉外層 try（你原本也少了）
       setState(() => _isRecording = false);
       _showSnackBar("錄音/轉錄/寫入失敗：$e");
     }
@@ -459,9 +680,7 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
         if (await f.exists()) await f.delete();
       }
     } catch (_) {}
-
   }
-
 
   Future<void> _openConversationReview(int friendUserId) async {
     try {
@@ -471,8 +690,10 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
       final contacts = await Supabase.instance.client
           .from('contacts')
           .select('contact_id, requester_id, friend_id, status')
-          .or('and(requester_id.eq.$myId,friend_id.eq.$friendUserId),and(requester_id.eq.$friendUserId,friend_id.eq.$myId)')
-          .eq('status', 'accepted')   // 只看已接受的關係
+          .or(
+            'and(requester_id.eq.$myId,friend_id.eq.$friendUserId),and(requester_id.eq.$friendUserId,friend_id.eq.$myId)',
+          )
+          .eq('status', 'accepted') // 只看已接受的關係
           .limit(1);
 
       if (contacts is! List || contacts.isEmpty) {
@@ -537,7 +758,6 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
     }
   }
 
-
   Future<int> _upsertConversationRecordByContact({
     required int contactId,
     required String content,
@@ -595,7 +815,6 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
       return row['record_id'] as int;
     }
   }
-
 
   @override
   void dispose() {
@@ -672,8 +891,7 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
                     onAnalyzePressed: () => _runCompanyAnalysis(profile),
                     onRecordPressed: () =>
                         _openConversationReview(profile.userId),
-                    onChatPressed: () =>
-                        _showSnackBar("點擊了 ${profile.username} 的話題建議"),
+                    onChatPressed: () => _fetchDialogSuggestions(profile),
                   ),
                 );
               }).toList(),
@@ -701,6 +919,8 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
 
   void _showSnackBar(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 }
