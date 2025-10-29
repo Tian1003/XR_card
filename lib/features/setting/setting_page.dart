@@ -1,9 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:my_app/core/theme/app_colors.dart';
 import 'package:my_app/features/xr_simulator/xr_simulator_page.dart';
+import 'package:supabase_flutter/supabase_flutter.dart'; // <--- [新增] 引入 Supabase
 
-class SettingPage extends StatelessWidget {
+class SettingPage extends StatefulWidget {
   const SettingPage({super.key});
+
+  @override
+  State<SettingPage> createState() => _SettingPageState();
+}
+
+class _SettingPageState extends State<SettingPage> {
+  bool _isResetting = false; // 用於管理重置功能的讀取狀態
 
   // 導航到 XR 模擬器頁面的方法
   void _navigateToXrSimulator(BuildContext context) {
@@ -11,6 +19,43 @@ class SettingPage extends StatelessWidget {
       context,
       MaterialPageRoute(builder: (_) => const XrSimulatorPage()),
     );
+  }
+
+  // 重置 Demo 的處理函數
+  Future<void> _resetDemo() async {
+    if (_isResetting) return; // 防止重複點擊
+
+    setState(() => _isResetting = true); // 開始重置，顯示讀取狀態
+
+    try {
+      // 直接在這裡執行 Supabase 刪除操作
+      await Supabase.instance.client
+          .from('contacts') // 根據您的 SQL 檔，表名是 'contacts'
+          .delete()
+          .or(
+            'and(requester_id.eq.1,friend_id.eq.2),and(requester_id.eq.2,friend_id.eq.1)',
+          );
+
+      if (!mounted) return; // 檢查 Widget 是否還存在
+      // ScaffoldMessenger.of(context).showSnackBar(
+      //   const SnackBar(
+      //     content: Text('Reset Demo 成功'),
+      //     backgroundColor: Colors.green,
+      //   ),
+      // );
+    } catch (e) {
+      if (!mounted) return; // 檢查 Widget 是否還存在
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Reset Demo 失敗: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isResetting = false); // 結束重置
+      }
+    }
   }
 
   @override
@@ -78,24 +123,41 @@ class SettingPage extends StatelessWidget {
 
           const SizedBox(height: 24),
 
-          _buildSectionTitle(context, '其他設定'),
-          // 可以在這裡加入更多設定選項
+          _buildSectionTitle(context, '帳號設定'),
           Card(
             elevation: 1,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
             child: ListTile(
-              title: Text('帳號設定'),
-              trailing: Icon(Icons.arrow_forward_ios, size: 16),
+              title: const Text('帳號設定'), // <--- [修改] 文字保持原樣
+              trailing: _isResetting
+                  ? const SizedBox(
+                      // [修改] 讀取時顯示轉圈
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(
+                      Icons.arrow_forward_ios,
+                      size: 16,
+                    ), // [修改] 預設顯示箭頭
+              onTap: _isResetting
+                  ? null
+                  : _resetDemo, // <--- [修改] 點擊時觸發 _resetDemo
             ),
           ),
+
+          const SizedBox(height: 24), // 與下一區塊間隔
+
+          _buildSectionTitle(context, '其他設定'),
+          // ... (其他設定 Card 保持不變)
           Card(
             elevation: 1,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
-            child: ListTile(
+            child: const ListTile(
               title: Text('通知設定'),
               trailing: Icon(Icons.arrow_forward_ios, size: 16),
             ),

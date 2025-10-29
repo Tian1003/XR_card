@@ -144,29 +144,49 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
 
   Future<void> _debugFetchLatestRecord() async {
     try {
+      if (_nearbyFriendIds.isEmpty) {
+        _showSnackBar("附近沒有好友，無法取得最新對話紀錄。");
+        return;
+      }
+
+      // 1️⃣ 取目前最接近的好友 ID
+      final friendUserId = _nearbyFriendIds.first;
+
+      // 2️⃣ 找雙方的 contact_id
+      final contactId = await _resolveContactIdForUser(friendUserId);
+      if (contactId == null) {
+        _showSnackBar("尚未與此好友建立聯絡人關係。");
+        return;
+      }
+
+      // 3️⃣ 查詢該 contact_id 最新紀錄
       final rows = await Supabase.instance.client
           .from('conversation_records')
-          .select('record_id, contact_id, content, created_at')
-          .eq('contact_id', 4)
+          .select('record_id, contact_id, content, summary, updated_at, record_time')
+          .eq('contact_id', contactId)
           .order('record_id', ascending: false)
           .limit(1);
 
       if (rows is List && rows.isNotEmpty) {
         final row = rows.first as Map<String, dynamic>;
-        final contentLen = (row['content'] as String?)?.length ?? 0;
+        final summary = (row['summary'] as String?)?.trim() ?? '（無摘要）';
+        final content = (row['content'] as String?)?.trim() ?? '（無內容）';
+        final when = row['updated_at'] ?? row['record_time'];
         debugPrint(
           'DB: 最新 record_id=${row['record_id']} '
-          'contact_id=${row['contact_id']} content_len=$contentLen '
-          'created_at=${row['created_at']}',
+          'contact_id=${row['contact_id']} summary_len=${summary.length} '
+          'content_len=${content.length} created_at=$when',
         );
-        _showSnackBar("最新一筆 record_id=${row['record_id']} 已寫入");
+        _showSnackBar("最新一筆 record_id=${row['record_id']} 已抓取成功");
       } else {
-        _showSnackBar("抓不到最新一筆資料（contact_id=4）");
+        _showSnackBar("目前與該聯絡人沒有任何對話紀錄。");
       }
     } catch (e) {
-      debugPrint("DB: 讀最新一筆失敗: $e");
+      debugPrint("DB: 抓最新對話失敗: $e");
+      _showSnackBar("讀取最新對話紀錄失敗");
     }
   }
+
 
   // --- 用於執行企業分析 ---
   Future<void> _runCompanyAnalysis(UserCompleteProfile profile) async {
@@ -315,7 +335,7 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
       // 3. 獲取上次對話回顧 (Supabase)
       // [!] 提醒：您需要將 contactId 傳入此頁面
       // final int? currentContactId = widget.contactId;
-      final int? currentContactId = null; // 暫時用 null
+      final int? currentContactId = await _resolveContactIdForUser(profile.userId); // 暫時用 null
 
       if (currentContactId != null) {
         try {
@@ -579,13 +599,37 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
 
   // ====== 錄音：開始/停止 + Whisper 轉錄 + Supabase 寫入 ======
   Future<String> _genWavPath() async {
-    final dir = await getApplicationDocumentsDirectory();
+    final dir = await getTemporaryDirectory(); // 改這裡
     final filename = "conv_${DateTime.now().millisecondsSinceEpoch}.wav";
     return "${dir.path}/$filename";
   }
 
-  // 停止錄音 → 轉文字 → Insert DB（contact_id=4）
-  Future<void> _toggleRecording() async {
+
+  //  查找 contact_id
+  Future<int?> _resolveContactIdForUser(int friendUserId) async {
+    final myId = _supabaseService.myUserId;
+
+    final rows = await Supabase.instance.client
+        .from('contacts')
+        .select('contact_id')
+        .or(
+          'and(requester_id.eq.$myId,friend_id.eq.$friendUserId),'
+          'and(requester_id.eq.$friendUserId,friend_id.eq.$myId)',
+        )
+        .eq('status', 'accepted')
+        .limit(1);
+
+    if (rows is List && rows.isNotEmpty) {
+      return rows.first['contact_id'] as int;
+    }
+    return null;
+  }
+
+
+  
+  // 🔹 2. 錄音函式（替代 _toggleRecording）
+  // 傳入 friendUserId，根據名片上的使用者執行錄音、轉文字與寫入
+  Future<void> _toggleRecordingFor(int friendUserId) async {
     try {
       if (!_isRecording) {
         // ====== 開始錄音 ======
@@ -593,6 +637,7 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
           _showSnackBar("沒有錄音權限");
           return;
         }
+
         final path = await _genWavPath();
         await _recorder.start(
           const RecordConfig(
@@ -608,26 +653,39 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
           _recordStartedAt = DateTime.now();
         });
         _showSnackBar("開始錄音…（再次點擊停止）");
+
       } else {
         // ====== 停止錄音 ======
         final p = await _recorder.stop();
-        setState(() => _isRecording = false); // ← 停止錄音後 UI 還原
+        setState(() => _isRecording = false);
         if (p == null) {
           _showSnackBar("未取得錄音檔");
           return;
         }
         _recordPath = p;
+        await Future.delayed(const Duration(milliseconds: 200));
 
-        // 時長
-        final durationSec = _recordStartedAt == null
-            ? 0
-            : DateTime.now().difference(_recordStartedAt!).inSeconds;
+        final f = File(_recordPath!);
+        final exists = await f.exists();
+        final len = exists ? await f.length() : 0;
+        debugPrint('STT filePath=$_recordPath exists=$exists len=$len');
+        if (!exists || len < 44) {
+          _showSnackBar("錄音檔異常");
+          return;
+        }
 
-        // ====== STT（Whisper 離線）=====
+        // ====== 取得 contact_id ======
+        final contactId = await _resolveContactIdForUser(friendUserId);
+        if (contactId == null) {
+          _showSnackBar("尚未與此用戶建立聯絡人關係，無法儲存對話。");
+          return;
+        }
+
+        // ====== STT（Whisper） ======
         String transcript = '';
         try {
           final stt = await _withTimeout(
-            _stt.transcribeFile(_recordPath!, durationSec: durationSec),
+            _stt.transcribeFile(_recordPath!, durationSec: DateTime.now().difference(_recordStartedAt!).inSeconds),
             const Duration(seconds: 180),
             'STT',
           );
@@ -638,49 +696,39 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
           transcript = '（STT 失敗或逾時：$e）';
         }
 
-        // ====== 摘要（可選：有金鑰才會成功）======
+        // ====== 摘要 ======
         String? summary;
         try {
           summary = await _summaryService.summarize(transcript);
           debugPrint("AI summary: ${summary?.length ?? 0} chars");
         } catch (e) {
-          debugPrint("AI: 摘要失敗：$e");
-          summary = null; // 失敗就不要擋主流程
+          debugPrint("AI 摘要失敗：$e");
         }
 
-        // ====== 以 contact_id 覆蓋式寫入（有就 update，沒有才 insert）=====
+        // ====== upsert：覆蓋最後一筆 ======
         try {
           final id = await _upsertConversationRecordByContact(
-            contactId: 4, // 這次測試固定 4
+            contactId: contactId,
             content: transcript.isEmpty ? '（無內容）' : transcript,
-            summary: summary, // 可能為 null
+            summary: summary,
             eventName: "對話錄音",
-            audioDurationSec: durationSec,
+            audioDurationSec: DateTime.now().difference(_recordStartedAt!).inSeconds,
           );
           _showSnackBar("DB 已更新（record_id=$id）");
-          debugPrint("DB: upsert OK record_id=$id");
         } catch (e, st) {
-          _showSnackBar("寫入資料庫失敗：$e");
-          debugPrint("DB: upsert failed: $e");
-          debugPrint("DB: stack: $st");
+          debugPrint("DB upsert failed: $e\n$st");
+          _showSnackBar("寫入資料庫失敗");
         }
 
-        // （可選）抓回最新一筆確認
+        // （可選）確認
         await _debugFetchLatestRecord();
-      } // ← 關閉 if-else（你原本少了這個）
-    } catch (e) {
-      // ← 關閉外層 try（你原本也少了）
-      setState(() => _isRecording = false);
-      _showSnackBar("錄音/轉錄/寫入失敗：$e");
-    }
-
-    try {
-      if (_recordPath != null) {
-        final f = File(_recordPath!);
-        if (await f.exists()) await f.delete();
       }
-    } catch (_) {}
+    } catch (e) {
+      _showSnackBar("錄音流程錯誤：$e");
+      setState(() => _isRecording = false);
+    }
   }
+
 
   Future<void> _openConversationReview(int friendUserId) async {
     try {
@@ -717,7 +765,6 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
 
       final rec = rows.first as Map<String, dynamic>;
       final summary = (rec['summary'] as String?)?.trim();
-      final content = (rec['content'] as String?)?.trim();
       final when = rec['updated_at'] ?? rec['record_time'];
 
       // 3) 顯示 Dialog
@@ -736,10 +783,7 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
                     summary?.isNotEmpty == true ? '摘要：\n$summary' : '摘要：無',
                     style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
-                  const SizedBox(height: 12),
-                  Text(
-                    content?.isNotEmpty == true ? '逐字稿：\n$content' : '逐字稿：無',
-                  ),
+                  
                 ],
               ),
             ),
@@ -889,8 +933,7 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
                   child: XrBusinessCard(
                     profile: profile,
                     onAnalyzePressed: () => _runCompanyAnalysis(profile),
-                    onRecordPressed: () =>
-                        _openConversationReview(profile.userId),
+                    onRecordPressed: () => _openConversationReview(profile.userId),
                     onChatPressed: () => _fetchDialogSuggestions(profile),
                   ),
                 );
@@ -907,7 +950,14 @@ class _XrSimulatorPageState extends State<XrSimulatorPage>
                 FabAction(
                   label: _isRecording ? "停止並轉錄" : "建立對話錄製",
                   icon: _isRecording ? Icons.stop : Icons.mic,
-                  onPressed: _toggleRecording,
+                  onPressed: () async {
+                    if (_nearbyFriendIds.isEmpty) {
+                      _showSnackBar("附近沒有偵測到好友，無法開始錄音。");
+                      return;
+                    }
+                    final friendId = _nearbyFriendIds.first;
+                    await _toggleRecordingFor(friendId);
+                  },
                 ),
               ],
             ),

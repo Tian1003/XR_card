@@ -1,4 +1,4 @@
-// lib/services/speech_to_text.dart
+import 'dart:io' show File;            
 import 'package:whisper_flutter_new/whisper_flutter_new.dart';
 
 class SpeechResult {
@@ -15,14 +15,18 @@ class SpeechToTextService {
 
 
   Future<SpeechResult> transcribeFile(String audioPath, {int durationSec = 0}) async {
+    final f = File(audioPath);
+    if (!await f.exists() || await f.length() < 44) {
+      throw Exception('Audio file not ready or invalid: $audioPath');
+    }
+
     final resp = await _whisper.transcribe(
-      transcribeRequest: 
-      TranscribeRequest(
+      transcribeRequest: TranscribeRequest(
         audio: audioPath,
         isTranslate: false,
-        isNoTimestamps: true, // 關掉時間戳
-        splitOnWord: false,   // 關掉逐字切分
-        language: 'zh',    // 若主語言固定，指定語言可省去偵測時間
+        isNoTimestamps: true,
+        splitOnWord: false,
+        language: 'zh',
       ),
     );
 
